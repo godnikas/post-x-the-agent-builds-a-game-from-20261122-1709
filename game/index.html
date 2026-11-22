@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>NEON DODGE — one prompt, one game</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #05010d; height: 100%; overflow: hidden; cursor: none; }
+  #game { display: block; width: 100vw; height: 100vh; touch-action: none; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+"use strict";
+// NEON DODGE — a tiny neon arcade game built from one prompt:
+// "Build a tiny neon arcade game where you dodge falling blocks and collect stars."
+// Steer with mouse, touch, or arrow keys. Dodge the blocks, grab the stars.
+// ?demo=1 turns on an autopilot so the game plays itself (used for filming).
+
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const DEMO = new URLSearchParams(location.search).has("demo");
+
+let W = 0, H = 0, scale = 1;
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+  canvas.style.width = W + "px"; canvas.style.height = H + "px";
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  scale = Math.min(W / 540, H / 960);
+}
+window.addEventListener("resize", resize);
+resize();
+
+// --- stars in the background ---------------------------------------------
+const bgStars = [];
+for (let i = 0; i < 90; i++) {
+  bgStars.push({ x: Math.random(), y: Math.random(), r: Math.random() * 1.8 + 0.4, s: Math.random() * 0.6 + 0.2 });
+}
+
+// --- game state ------------------------------------------------------------
+const player = { x: 0.5, y: 0.86, r: 26, targetX: 0.5, alive: true };
+let blocks = [], stars = [], particles = [];
+let score = 0, best = 0, lives = 3, speed = 1, elapsed = 0;
+let state = "title"; // title | playing | over
+let titleT = 0, overT = 0, shake = 0;
+let spawnT = 0, starT = 0;
+
+function reset() {
+  blocks = []; stars = []; particles = [];
+  score = 0; lives = 3; speed = 1; elapsed = 0;
+  player.x = 0.5; player.targetX = 0.5; player.alive = true;
+  state = "playing";
+}
+
+function px(v) { return v * scale; }
+function X(frac) { return frac * W; }
+function Y(frac) { return frac * H; }
+
+function spawnBlock() {
+  const w = 34 + Math.random() * 46;
+  blocks.push({
+    x: Math.random() * (W - w), y: -60, w, h: 26 + Math.random() * 30,
+    vy: (2.4 + Math.random() * 2.2) * speed * (DEMO ? 0.85 : 1),
+    hue: 320 + Math.random() * 40, rot: (Math.random() - 0.5) * 0.6
+  });
+}
+
+function spawnStar() {
+  stars.push({ x: 40 + Math.random() * (W - 80), y: -30, r: 16, vy: (2.2 + Math.random()) * speed, tw: Math.random() * 6.28 });
+}
+
+function burst(x, y, color, n) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * 6.28, sp = 2 + Math.random() * 6;
+    particles.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: 1, color });
+  }
+}
+
+// --- input -----------------------------------------------------------------
+function steer(clientX) { player.targetX = Math.max(0.05, Math.min(0.95, clientX / W)); }
+canvas.addEventListener("pointermove", e => steer(e.clientX));
+canvas.addEventListener("pointerdown", e => {
+  steer(e.clientX);
+  if (state === "title") reset();
+  else if (state === "over" && overT > 0.8) reset();
+});
+const keys = {};
+window.addEventListener("keydown", e => {
+  keys[e.key] = true;
+  if (state === "title" && (e.key === " " || e.key === "Enter")) reset();
+  if (state === "over" && overT > 0.8 && (e.key === " " || e.key === "Enter")) reset();
+});
+window.addEventListener("keyup", e => { keys[e.key] = false; });
+
+// --- autopilot (demo mode) ---------------------------------------------------
+function autopilot(dt) {
+  // Chase the lowest star; dodge only a block that is about to hit,
+  // slipping to the side the star is on when that side is clear.
+  let starX = player.x;
+  let nearestStar = null;
+  for (const s of stars) if (s.y < Y(player.y) && (!nearestStar || s.y > nearestStar.y)) nearestStar = s;
+  if (nearestStar) starX = nearestStar.x / W;
+
+  let tx = starX;
+  let threat = null;
+  for (const b of blocks) {
+    const by = b.y + b.h;
+    const overlap = Math.abs(b.x + b.w / 2 - X(player.x)) < b.w / 2 + px(player.r) - 6;
+    if (overlap && by > Y(player.y) - 300 && by < Y(player.y) + 20) {
+      if (!threat || by > threat.y + threat.h) threat = b;
+    }
+  }
+  if (threat) {
+    const cx = threat.x + threat.w / 2;
+    const leftX = Math.max(0.05, (cx - threat.w / 2 - px(player.r) - 26) / W);
+    const rightX = Math.min(0.95, (cx + threat.w / 2 + px(player.r) + 26) / W);
+    tx = Math.abs(starX - leftX) <= Math.abs(starX - rightX) ? leftX : rightX;
+  }
+  player.targetX += (tx - player.targetX) * Math.min(1, dt * 10);
+}
+
+// --- update ------------------------------------------------------------------
+function update(dt) {
+  titleT += dt;
+  for (const s of bgStars) { s.y += s.s * dt * 0.02; if (s.y > 1) s.y = 0; }
+  for (const p of particles) { p.x += p.vx * dt * 60; p.y += p.vy * dt * 60; p.vy += 0.12 * dt * 60; p.life -= dt * 1.6; }
+  particles = particles.filter(p => p.life > 0);
+  if (state !== "playing") { if (state === "over") overT += dt; return; }
+
+  elapsed += dt;
+  speed = 1 + elapsed * 0.03;
+  if (keys.ArrowLeft || keys.a) player.targetX = Math.max(0.05, player.targetX - dt * 0.9);
+  if (keys.ArrowRight || keys.d) player.targetX = Math.min(0.95, player.targetX + dt * 0.9);
+  if (DEMO) autopilot(dt);
+  player.x += (player.targetX - player.x) * Math.min(1, dt * 14);
+
+  spawnT -= dt; starT -= dt;
+  if (spawnT <= 0) { spawnBlock(); spawnT = Math.max(0.45, 1.0 - elapsed * 0.012); }
+  if (starT <= 0) { spawnStar(); starT = 0.7 + Math.random() * 0.5; }
+
+  const pR = px(player.r);
+  for (const b of blocks) {
+    b.y += b.vy * dt * 60; b.rot += dt * 0.4;
+    if (b.y > H + 80) continue;
+    // AABB vs player circle
+    const cx = Math.max(b.x, Math.min(X(player.x), b.x + b.w));
+    const cy = Math.max(b.y, Math.min(Y(player.y), b.y + b.h));
+    if (Math.hypot(X(player.x) - cx, Y(player.y) - cy) < pR * (DEMO ? 0.62 : 0.9)) {
+      burst(X(player.x), Y(player.y), "#ff2d95", 26);
+      shake = 14; lives--; b.y = H + 999;
+      if (lives <= 0) {
+        player.alive = false; state = "over"; overT = 0;
+        best = Math.max(best, score);
+      }
+    }
+  }
+  blocks = blocks.filter(b => b.y < H + 100);
+  for (const s of stars) {
+    s.y += s.vy * dt * 60; s.tw += dt * 5;
+    if (Math.hypot(X(player.x) - s.x, Y(player.y) - s.y) < pR + s.r + 16) {
+      score += 10; burst(s.x, s.y, "#ffe94a", 14); s.y = H + 999;
+    }
+  }
+  stars = stars.filter(s => s.y < H + 60);
+}
+
+// --- draw --------------------------------------------------------------------
+function drawStar(x, y, r, rot) {
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const rr = i % 2 === 0 ? r : r * 0.45, a = rot + i * Math.PI / 5;
+    ctx[i === 0 ? "moveTo" : "lineTo"](x + Math.cos(a) * rr, y + Math.sin(a) * rr);
+  }
+  ctx.closePath();
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.save();
+  if (shake > 0.5) { ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake); shake *= 0.88; }
+  else shake = 0;
+
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, "#0a0124"); g.addColorStop(0.55, "#12043a"); g.addColorStop(1, "#05010d");
+  ctx.fillStyle = g; ctx.fillRect(-20, -20, W + 40, H + 40);
+
+  ctx.fillStyle = "#ffffff";
+  for (const s of bgStars) { ctx.globalAlpha = 0.25 + 0.55 * Math.abs(Math.sin(titleT * 2 + s.r * 9)); ctx.beginPath(); ctx.arc(s.x * W, s.y * H, s.r * scale, 0, 6.29); ctx.fill(); }
+  ctx.globalAlpha = 1;
+
+  if (state === "title") {
+    ctx.textAlign = "center";
+    ctx.shadowColor = "#ff2d95"; ctx.shadowBlur = 34;
+    ctx.fillStyle = "#ff2d95"; ctx.font = `900 ${px(64)}px "Arial Black", sans-serif`;
+    ctx.fillText("NEON", W / 2, H * 0.30);
+    ctx.fillStyle = "#22e6ff"; ctx.shadowColor = "#22e6ff";
+    ctx.fillText("DODGE", W / 2, H * 0.30 + px(72));
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = "#e8e6ff"; ctx.font = `${px(24)}px sans-serif`;
+    ctx.fillText("dodge the blocks · grab the stars", W / 2, H * 0.30 + px(132));
+    if (Math.sin(titleT * 4) > -0.2) {
+      ctx.fillStyle = "#ffe94a"; ctx.font = `700 ${px(28)}px sans-serif`;
+      ctx.fillText(DEMO ? "▶ autopilot on — watch it play" : "tap or press space to play", W / 2, H * 0.62);
+    }
+    ctx.fillStyle = "#8f8bb8"; ctx.font = `${px(20)}px sans-serif`;
+    ctx.fillText("built by an AI agent from ONE prompt", W / 2, H * 0.70);
+  }
+
+  if (state === "playing" || state === "over") {
+    // blocks
+    for (const b of blocks) {
+      ctx.save(); ctx.translate(b.x + b.w / 2, b.y + b.h / 2); ctx.rotate(b.rot);
+      ctx.shadowColor = `hsl(${b.hue} 100% 60%)`; ctx.shadowBlur = 22;
+      ctx.fillStyle = `hsl(${b.hue} 100% 58%)`;
+      ctx.fillRect(-b.w / 2, -b.h / 2, b.w, b.h);
+      ctx.shadowBlur = 0; ctx.fillStyle = "rgba(255,255,255,0.85)";
+      ctx.fillRect(-b.w / 2, -b.h / 2, b.w, 5);
+      ctx.restore();
+    }
+    // stars
+    for (const s of stars) {
+      ctx.save(); ctx.translate(s.x, s.y);
+      ctx.shadowColor = "#ffe94a"; ctx.shadowBlur = 20;
+      ctx.fillStyle = "#ffe94a";
+      drawStar(0, 0, s.r * (1 + 0.12 * Math.sin(s.tw)), s.tw * 0.2); ctx.fill();
+      ctx.restore();
+    }
+    // particles
+    for (const p of particles) { ctx.globalAlpha = Math.max(0, p.life); ctx.fillStyle = p.color; ctx.beginPath(); ctx.arc(p.x, p.y, 3.5, 0, 6.29); ctx.fill(); }
+    ctx.globalAlpha = 1;
+
+    // player ship
+    if (player.alive) {
+      const pxp = X(player.x), pyp = Y(player.y);
+      ctx.save(); ctx.translate(pxp, pyp);
+      ctx.shadowColor = "#22e6ff"; ctx.shadowBlur = 26;
+      ctx.fillStyle = "#22e6ff";
+      ctx.beginPath(); ctx.moveTo(0, -px(player.r)); ctx.lineTo(px(player.r) * 0.8, px(player.r) * 0.7); ctx.lineTo(0, px(player.r) * 0.25); ctx.lineTo(-px(player.r) * 0.8, px(player.r) * 0.7); ctx.closePath(); ctx.fill();
+      ctx.shadowBlur = 0; ctx.fillStyle = "#ffffff";
+      ctx.beginPath(); ctx.arc(0, -px(4), px(6), 0, 6.29); ctx.fill();
+      ctx.restore();
+      // engine trail
+      ctx.strokeStyle = "rgba(34,230,255,0.5)"; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(pxp, pyp + px(player.r) * 0.8); ctx.lineTo(pxp, pyp + px(player.r) * 0.8 + 26 + Math.random() * 18); ctx.stroke();
+    }
+
+    // HUD
+    ctx.textAlign = "left";
+    ctx.fillStyle = "#ffffff"; ctx.font = `800 ${px(30)}px sans-serif`;
+    ctx.fillText("SCORE " + score, 24, 54);
+    ctx.textAlign = "right";
+    ctx.fillStyle = "#ffe94a"; ctx.font = `800 ${px(30)}px sans-serif`;
+    ctx.fillText("★ " + Math.floor(score / 10), W - 24, 54);
+    ctx.textAlign = "left"; ctx.fillStyle = "#ff2d95"; ctx.font = `800 ${px(26)}px sans-serif`;
+    ctx.fillText("♥".repeat(Math.max(0, lives)) + "♡".repeat(Math.max(0, 3 - lives)), 24, 96);
+    ctx.textAlign = "right"; ctx.fillStyle = "#8f8bb8"; ctx.font = `${px(22)}px sans-serif`;
+    ctx.fillText("NEON DODGE", W - 24, 96);
+
+    if (state === "over") {
+      ctx.fillStyle = "rgba(5,1,13,0.72)"; ctx.fillRect(0, 0, W, H);
+      ctx.textAlign = "center";
+      ctx.shadowColor = "#ff2d95"; ctx.shadowBlur = 30;
+      ctx.fillStyle = "#ff2d95"; ctx.font = `900 ${px(58)}px "Arial Black", sans-serif`;
+      ctx.fillText("GAME OVER", W / 2, H * 0.42);
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = "#ffffff"; ctx.font = `700 ${px(34)}px sans-serif`;
+      ctx.fillText("score " + score + "  ·  best " + best, W / 2, H * 0.42 + px(64));
+      if (overT > 0.8 && Math.sin(overT * 4) > -0.2) {
+        ctx.fillStyle = "#ffe94a"; ctx.font = `700 ${px(26)}px sans-serif`;
+        ctx.fillText(DEMO ? "restarting…" : "tap to play again", W / 2, H * 0.42 + px(130));
+      }
+    }
+  }
+  ctx.restore();
+
+  // demo auto-start / auto-restart
+  if (DEMO) {
+    if (state === "title" && titleT > 1.2) reset();
+    if (state === "over" && overT > 1.6) reset();
+  }
+}
+
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.1, (now - last) / 1000); last = now;
+  update(dt); draw();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

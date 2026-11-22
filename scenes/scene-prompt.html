@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { width: 1080px; height: 1920px; background: #05010d; color: #fff;
+    font-family: Arial, sans-serif; display: flex; flex-direction: column;
+    justify-content: center; padding: 0 90px; overflow: hidden; }
+  .label { font-family: monospace; font-size: 40px; letter-spacing: 8px; color: #8f8bb8; margin-bottom: 46px; }
+  .bubble { background: #171233; border: 3px solid #2c2370; border-radius: 36px;
+    padding: 56px 52px; box-shadow: 0 0 80px rgba(80,40,220,.35); }
+  .who { font-size: 34px; color: #22e6ff; font-weight: bold; margin-bottom: 26px; }
+  .prompt { font-size: 58px; line-height: 1.45; font-weight: bold; }
+  .prompt .hl { color: #ffe94a; }
+  .cursor { display: inline-block; width: 34px; height: 62px; background: #ff2d95;
+    vertical-align: -8px; margin-left: 8px; animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .foot { margin-top: 60px; font-family: monospace; font-size: 36px; color: #8f8bb8; }
+  .foot b { color: #ff2d95; }
+</style></head>
+<body>
+  <div class="label">THE PROMPT — ONE SENTENCE</div>
+  <div class="bubble">
+    <div class="who">you ▸ agent</div>
+    <div class="prompt">“Build a tiny <span class="hl">neon arcade game</span> where you <span class="hl">dodge falling blocks</span> and <span class="hl">collect stars</span>.”<span class="cursor"></span></div>
+  </div>
+  <div class="foot">no brief. no mockups. <b>one sentence.</b></div>
+</body></html>
